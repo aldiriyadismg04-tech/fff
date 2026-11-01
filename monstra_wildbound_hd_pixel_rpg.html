@@ -1546,4 +1546,1144 @@
         // Pass 1: Hard alpha threshold & 32-bit pixel palette quantization + subtle dithering
         for (let y = 0; y < g; y++) {
           for (let x = 0; x < g; x++) {
-            const i
+                        const idx = (y * g + x) * 4;
+            const a = d[idx + 3];
+            if (a > 60) {
+              // Quantize RGB channels for retro 16/32-bit palette look
+              const r = Math.round(d[idx] / 32) * 32;
+              const gVal = Math.round(d[idx + 1] / 32) * 32;
+              const b = Math.round(d[idx + 2] / 32) * 32;
+              od[idx] = Math.min(255, r);
+              od[idx + 1] = Math.min(255, gVal);
+              od[idx + 2] = Math.min(255, b);
+              od[idx + 3] = 255;
+            } else {
+              od[idx + 3] = 0;
+            }
+          }
+        }
+
+        // Pass 2: Add 1px crisp dark pixel outline around solid edges
+        const finalData = octx.createImageData(g, g);
+        const fd = finalData.data;
+        for (let i = 0; i < od.length; i++) fd[i] = od[i];
+
+        for (let y = 0; y < g; y++) {
+          for (let x = 0; x < g; x++) {
+            const idx = (y * g + x) * 4;
+            if (od[idx + 3] === 0) {
+              let hasOpaqueNeighbor = false;
+              const neighbors = [
+                [x - 1, y], [x + 1, y],
+                [x, y - 1], [x, y + 1]
+              ];
+              for (const [nx, ny] of neighbors) {
+                if (nx >= 0 && nx < g && ny >= 0 && ny < g) {
+                  const nIdx = (ny * g + nx) * 4;
+                  if (od[nIdx + 3] > 0) {
+                    hasOpaqueNeighbor = true;
+                    break;
+                  }
+                }
+              }
+              if (hasOpaqueNeighbor) {
+                fd[idx] = 15;
+                fd[idx + 1] = 23;
+                fd[idx + 2] = 42;
+                fd[idx + 3] = 255;
+              }
+            }
+          }
+        }
+        octx.putImageData(finalData, 0, 0);
+
+        const dataUrl = off.toDataURL('image/png');
+        PIXEL_SPRITE_CACHE[key] = dataUrl;
+
+        const cachedImg = new Image();
+        cachedImg.src = dataUrl;
+        PIXEL_IMAGE_CACHE[key] = cachedImg;
+      };
+      img.src = encoded;
+
+      // Temporary placeholder while raster image compiles
+      return encoded;
+    }
+
+    function getSpriteImgElement(stageId, flipX = false, extraClass = '') {
+      const src = buildPixelSpriteForStage(stageId, flipX);
+      return `<img src="${src}" class="pixel-sprite pixelated w-full h-full object-contain ${extraClass}" alt="${stageId}" />`;
+    }
+
+    /***************************************************************************
+     * 4. GLOBAL GAME STATE MANAGEMENT
+     ***************************************************************************/
+    const STATE = {
+      mode: 'starter', // 'starter' | 'overworld' | 'battle'
+      timeOfDay: 0,    // 0: Day, 1: Dusk, 2: Night
+      isSprinting: false,
+      selectedStarterId: 'garudaen',
+      
+      player: {
+        x: 980,
+        y: 680,
+        vx: 0,
+        vy: 0,
+        speed: 3.5,
+        facing: 'down',
+        isMoving: false,
+        animFrame: 0,
+        animTimer: 0
+      },
+
+      keys: {
+        up: false,
+        down: false,
+        left: false,
+        right: false
+      },
+
+      party: [],
+      bag: {
+        orb: 12,
+        potion: 6,
+        rarecandy: 2,
+        bulu_angin: 4,
+        kepingan_batik: 3,
+        sisik_samudra: 2,
+        cozy_fur: 2
+      },
+
+      quest: {
+        id: 'explore_wilds',
+        title: 'Explore the Verdant Wilds',
+        desc: 'Bicaralah dengan Pak Tani di Ancient Ruins atau kalahkan Monstra liar.'
+      },
+
+      battle: {
+        playerMon: null,
+        enemyMon: null,
+        isPlayerTurn: true,
+        isProcessing: false,
+        escapesTried: 0
+      },
+
+      activeCodexFamily: 'garudaya'
+    };
+
+    /***************************************************************************
+     * 5. STARTER SELECTION INITIALIZATION
+     ***************************************************************************/
+    function initStarterScreen() {
+      STATE.mode = 'starter';
+      document.getElementById('starterScreen').classList.remove('hidden');
+      document.getElementById('battleScreen').classList.add('hidden');
+      renderStarterScreen();
+      renderStarterCanvasBackdrop();
+    }
+
+    function renderStarterCanvasBackdrop() {
+      const c = document.getElementById('starterBgCanvas');
+      if (!c) return;
+      c.width = window.innerWidth;
+      c.height = window.innerHeight;
+      const ctx = c.getContext('2d');
+
+      const grad = ctx.createLinearGradient(0, 0, 0, c.height);
+      grad.addColorStop(0, '#020617');
+      grad.addColorStop(0.5, '#0f172a');
+      grad.addColorStop(1, '#022c22');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, c.width, c.height);
+
+      // Arcane aura ring in center
+      ctx.strokeStyle = 'rgba(217, 119, 6, 0.25)';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(c.width / 2, c.height / 2, 240, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    function renderStarterScreen() {
+      const grid = document.getElementById('starterCardsGrid');
+      const starters = [
+        { id: 'garudaen', family: 'garudaya', name: 'Garudaen', type: 'Flying / Fire', icon: '🦅' },
+        { id: 'aquafly', family: 'aquarion', name: 'Aquafly', type: 'Water / Flying', icon: '🌊' },
+        { id: 'sikaru', family: 'sikaru', name: 'Sikaru', type: 'Grass', icon: '🌿' }
+      ];
+
+      grid.innerHTML = starters.map(st => {
+        const isSelected = STATE.selectedStarterId === st.id;
+        const info = getStageData(st.id);
+        const stage = info.stage;
+
+        return `
+        <div onclick="selectStarter('${st.id}')" class="cursor-pointer transition transform hover:-translate-y-2 flex flex-col items-center">
+          <div class="relative w-full rounded-2xl p-4 flex flex-col items-center border-2 ${
+            isSelected 
+              ? 'border-amber-400 bg-gradient-to-b from-amber-950/60 to-slate-900/90 shadow-[0_0_30px_rgba(251,191,36,0.45)] scale-105' 
+              : 'border-slate-700 bg-slate-900/80 hover:border-slate-500'
+          }">
+            <div class="text-xs font-extrabold uppercase tracking-widest text-amber-300/80 mb-1">${st.icon} ${st.type}</div>
+            <div class="text-xl font-black text-white">${st.name}</div>
+            
+            <div class="w-36 h-36 my-3 flex items-center justify-center">
+              ${getSpriteImgElement(st.id, false, 'animate-float')}
+            </div>
+
+            <!-- Pedestal Ring -->
+            <div class="w-32 h-5 rounded-full bg-cyan-400/20 border border-cyan-400/50 shadow-[0_0_15px_#22d3ee] mb-2"></div>
+
+            <p class="text-xs text-slate-300 text-center line-clamp-2 px-2">${stage.lore}</p>
+            
+            <div class="mt-3 flex gap-1">
+              ${stage.types.map(t => getTypeBadgeHTML(t)).join('')}
+            </div>
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    function selectStarter(starterId) {
+      playSfx('click');
+      STATE.selectedStarterId = starterId;
+      renderStarterScreen();
+      const stageInfo = getStageData(starterId);
+      document.getElementById('starterPromptText').textContent = `Memilih ${stageInfo.stage.name}!`;
+      document.getElementById('starterLorePreview').textContent = stageInfo.stage.lore;
+    }
+
+    function confirmStarterChoice() {
+      playSfx('evolve');
+      const baseMon = createMonstraInstance(STATE.selectedStarterId, 8);
+      STATE.party = [baseMon];
+
+      const includeBonus = document.getElementById('chkIncludeGetahug').checked;
+      if (includeBonus) {
+        STATE.party.push(createMonstraInstance('getahug', 6));
+        STATE.party.push(createMonstraInstance('rimbafox', 6));
+      }
+
+      document.getElementById('starterScreen').classList.add('hidden');
+      STATE.mode = 'overworld';
+      updateOverworldHud();
+      showToast(`Petualangan dimulai bersama ${baseMon.name}!`);
+    }
+
+    function createMonstraInstance(stageId, level = 5) {
+      const info = getStageData(stageId) || {
+        stage: {
+          id: stageId,
+          name: stageId === 'rimbafox' ? 'Rubah Rimba' : 'Sikaru',
+          types: stageId === 'rimbafox' ? ['Fire'] : ['Grass'],
+          stats: { hp: 45, atk: 50, def: 42, spd: 55 },
+          skills: [{ name: 'Cakar Rimba', type: 'Normal', power: 50, desc: 'Serangan cakar lincah.' }]
+        }
+      };
+
+      const s = info.stage;
+      const maxHp = Math.floor(s.stats.hp + (level * 3.2));
+      return {
+        instanceId: 'mon_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+        stageId: s.id,
+        name: s.name,
+        level: level,
+        exp: 0,
+        expNext: level * 25,
+        types: [...s.types],
+        hp: maxHp,
+        maxHp: maxHp,
+        atk: s.stats.atk + Math.floor(level * 1.5),
+        def: s.stats.def + Math.floor(level * 1.2),
+        spd: s.stats.spd + Math.floor(level * 1.4),
+        skills: s.skills ? JSON.parse(JSON.stringify(s.skills)) : [
+          { name: 'Serangan Cepat', type: 'Normal', power: 45, desc: 'Menyerang kilat.' }
+        ]
+      };
+    }
+
+    /***************************************************************************
+     * 6. OVERWORLD ENGINE & DYNAMIC HD-2D TILEMAP RENDERING
+     ***************************************************************************/
+    const worldCanvas = document.getElementById('worldCanvas');
+    const wctx = worldCanvas.getContext('2d');
+    const minimapCanvas = document.getElementById('minimapCanvas');
+    const mctx = minimapCanvas.getContext('2d');
+
+    const WORLD_WIDTH = 2000;
+    const WORLD_HEIGHT = 1400;
+
+    // Static Landmarks in Verdant Wilds
+    const LANDMARKS = [
+      { id: 'ruins', name: 'Ancient Ruins', x: 460, y: 520, w: 140, h: 100, icon: '🏛️' },
+      { id: 'cottage', name: 'Pondok Biru Ayu', x: 1480, y: 665, w: 120, h: 90, icon: '🏡' },
+      { id: 'sanctuary', name: 'Monstra Sanctuary', x: 1440, y: 340, w: 160, h: 110, icon: '🏢' },
+      { id: 'bridge', name: 'Jembatan Tali Rimba', x: 980, y: 680, w: 80, h: 130, icon: '🌉' }
+    ];
+
+    // Interactive NPCs & Wild Spawns
+    const OVERWORLD_ENTITIES = [
+      { id: 'npc_tani', type: 'npc', name: 'Pak Tani', x: 520, y: 590, avatar: '👨‍🌾', text: 'Salam petualang! Rerumputan di utara sangat lebat, siapkan Monstra Orb jika ingin menangkap Monstra liar.' },
+      { id: 'npc_ayu', type: 'npc', name: 'Ayu', x: 1450, y: 720, avatar: '👩‍🌾', text: 'Monstra kamu terlihat kelelahan? Singgahlah di pondokku untuk memulihkan seluruh HP secara cuma-cuma!' },
+      { id: 'item_fur', type: 'item', itemId: 'cozy_fur', name: 'Kilauan Cozy Fur', x: 880, y: 440, collected: false },
+      { id: 'item_batik', type: 'item', itemId: 'kepingan_batik', name: 'Kepingan Batik Antik', x: 620, y: 760, collected: false }
+    ];
+
+    function resizeWorldCanvas() {
+      worldCanvas.width = window.innerWidth;
+      worldCanvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', () => {
+      resizeWorldCanvas();
+      if (STATE.mode === 'starter') renderStarterCanvasBackdrop();
+    });
+    resizeWorldCanvas();
+
+    function setKeyDir(dir, val) {
+      STATE.keys[dir] = val;
+    }
+
+    window.addEventListener('keydown', e => {
+      const k = e.key.toLowerCase();
+      if (k === 'arrowup' || k === 'w') STATE.keys.up = true;
+      if (k === 'arrowdown' || k === 's') STATE.keys.down = true;
+      if (k === 'arrowleft' || k === 'a') STATE.keys.left = true;
+      if (k === 'arrowright' || k === 'd') STATE.keys.right = true;
+      if (k === 'shift') STATE.isSprinting = true;
+      if (k === ' ' || k === 'enter') triggerContextInteraction();
+    });
+
+    window.addEventListener('keyup', e => {
+      const k = e.key.toLowerCase();
+      if (k === 'arrowup' || k === 'w') STATE.keys.up = false;
+      if (k === 'arrowdown' || k === 's') STATE.keys.down = false;
+      if (k === 'arrowleft' || k === 'a') STATE.keys.left = false;
+      if (k === 'arrowright' || k === 'd') STATE.keys.right = false;
+      if (k === 'shift') STATE.isSprinting = false;
+    });
+
+    function toggleSprint() {
+      STATE.isSprinting = !STATE.isSprinting;
+      const btn = document.getElementById('btnRunCircle');
+      if (STATE.isSprinting) {
+        btn.classList.add('border-amber-400', 'bg-amber-500/30');
+      } else {
+        btn.classList.remove('border-amber-400', 'bg-amber-500/30');
+      }
+    }
+
+    function cycleTimeOfDay() {
+      playSfx('click');
+      STATE.timeOfDay = (STATE.timeOfDay + 1) % 3;
+      const icons = ['☀️', '🌅', '🌙'];
+      const labels = ['☀️ Siang Cerah', '🌅 Senja Merona', '🌙 Malam Berbintang'];
+      document.getElementById('lightingIcon').textContent = icons[STATE.timeOfDay];
+      document.getElementById('timeLabelBadge').textContent = labels[STATE.timeOfDay];
+      showToast(`Waktu diubah ke: ${labels[STATE.timeOfDay]}`);
+    }
+
+    function updatePlayerMovement() {
+      if (STATE.mode !== 'overworld') return;
+
+      let dx = 0;
+      let dy = 0;
+      if (STATE.keys.up) dy -= 1;
+      if (STATE.keys.down) dy += 1;
+      if (STATE.keys.left) dx -= 1;
+      if (STATE.keys.right) dx += 1;
+
+      const p = STATE.player;
+      p.isMoving = dx !== 0 || dy !== 0;
+
+      if (p.isMoving) {
+        const mag = Math.sqrt(dx * dx + dy * dy);
+        const curSpeed = p.speed * (STATE.isSprinting ? 1.75 : 1.0);
+        p.x += (dx / mag) * curSpeed;
+        p.y += (dy / mag) * curSpeed;
+
+        if (Math.abs(dx) > Math.abs(dy)) {
+          p.facing = dx > 0 ? 'right' : 'left';
+        } else {
+          p.facing = dy > 0 ? 'down' : 'up';
+        }
+
+        // Keep inside world boundary
+        p.x = Math.max(50, Math.min(WORLD_WIDTH - 50, p.x));
+        p.y = Math.max(50, Math.min(WORLD_HEIGHT - 50, p.y));
+
+        p.animTimer++;
+        if (p.animTimer % 8 === 0) p.animFrame = (p.animFrame + 1) % 4;
+
+        // Random encounter check in tall grass zones
+        checkWildGrassEncounter();
+      }
+
+      checkProximityPrompts();
+    }
+
+    let grassStepCount = 0;
+    function checkWildGrassEncounter() {
+      const p = STATE.player;
+      // Tall grass patch area around (1200-1600, 250-500)
+      const inGrass = p.x >= 1200 && p.x <= 1650 && p.y >= 250 && p.y <= 550;
+      if (inGrass) {
+        grassStepCount++;
+        if (grassStepCount > 130) {
+          if (Math.random() < 0.035) {
+            grassStepCount = 0;
+            triggerWildBattle();
+          }
+        }
+      }
+    }
+
+    let nearbyEntity = null;
+    function checkProximityPrompts() {
+      const p = STATE.player;
+      const prompt = document.getElementById('interactPrompt');
+      const icon = document.getElementById('interactPromptIcon');
+      const text = document.getElementById('interactPromptText');
+
+      nearbyEntity = null;
+      for (const ent of OVERWORLD_ENTITIES) {
+        if (ent.collected) continue;
+        const dist = Math.hypot(p.x - ent.x, p.y - ent.y);
+        if (dist < 64) {
+          nearbyEntity = ent;
+          break;
+        }
+      }
+
+      if (nearbyEntity) {
+        prompt.classList.remove('hidden');
+        if (nearbyEntity.type === 'npc') {
+          icon.textContent = nearbyEntity.avatar || '💬';
+          text.textContent = `Bicara dengan ${nearbyEntity.name} [Spasi]`;
+        } else {
+          icon.textContent = '✨';
+          text.textContent = `Ambil ${nearbyEntity.name} [Spasi]`;
+        }
+      } else {
+        prompt.classList.add('hidden');
+      }
+    }
+
+    function triggerContextInteraction() {
+      if (!nearbyEntity) return;
+      if (nearbyEntity.type === 'npc') {
+        openDialogue(nearbyEntity.avatar, nearbyEntity.name, nearbyEntity.text);
+        if (nearbyEntity.id === 'npc_ayu') {
+          // Heal entire party
+          STATE.party.forEach(m => m.hp = m.maxHp);
+          playSfx('heal');
+          updateOverworldHud();
+          showToast('Seluruh HP Monstra di party telah pulih!');
+        }
+      } else if (nearbyEntity.type === 'item') {
+        nearbyEntity.collected = true;
+        STATE.bag[nearbyEntity.itemId] = (STATE.bag[nearbyEntity.itemId] || 0) + 1;
+        playSfx('pickup');
+        showToast(`Memperoleh 1x ${nearbyEntity.name}!`);
+        nearbyEntity = null;
+        document.getElementById('interactPrompt').classList.add('hidden');
+      }
+    }
+
+    function renderWorld() {
+      const p = STATE.player;
+      const cx = worldCanvas.width / 2 - p.x;
+      const cy = worldCanvas.height / 2 - p.y;
+
+      wctx.save();
+      wctx.fillStyle = '#064e3b';
+      wctx.fillRect(0, 0, worldCanvas.width, worldCanvas.height);
+      wctx.translate(cx, cy);
+
+      // Render World Floor
+      wctx.fillStyle = '#065f46';
+      wctx.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+
+      // Cobblestone Pathways & Crossroads
+      wctx.fillStyle = '#a8a29e';
+      wctx.fillRect(940, 0, 80, WORLD_HEIGHT);
+      wctx.fillRect(0, 650, WORLD_WIDTH, 70);
+
+      // Tall Wild Grass Zones (Striped HD pixel patches)
+      wctx.fillStyle = '#047857';
+      wctx.fillRect(1200, 220, 460, 320);
+      wctx.fillStyle = '#10b981';
+      for (let gx = 1210; gx < 1650; gx += 24) {
+        for (let gy = 230; gy < 530; gy += 24) {
+          wctx.fillRect(gx, gy, 8, 14);
+        }
+      }
+
+      // Landmarks
+      LANDMARKS.forEach(l => {
+        wctx.fillStyle = '#1e293b';
+        wctx.strokeStyle = '#d4af37';
+        wctx.lineWidth = 3;
+        wctx.fillRect(l.x, l.y, l.w, l.h);
+        wctx.strokeRect(l.x, l.y, l.w, l.h);
+
+        wctx.fillStyle = '#f8fafc';
+        wctx.font = 'bold 14px "Plus Jakarta Sans"';
+        wctx.textAlign = 'center';
+        wctx.fillText(`${l.icon} ${l.name}`, l.x + l.w / 2, l.y + l.h / 2 + 5);
+      });
+
+      // Entities (NPCs & Items)
+      OVERWORLD_ENTITIES.forEach(ent => {
+        if (ent.collected) return;
+        wctx.font = '28px sans-serif';
+        wctx.textAlign = 'center';
+        wctx.fillText(ent.avatar || '✨', ent.x, ent.y);
+      });
+
+      // Render Player Character
+      wctx.save();
+      wctx.translate(p.x, p.y);
+      // Soft ground shadow
+      wctx.fillStyle = 'rgba(0,0,0,0.35)';
+      wctx.beginPath();
+      wctx.ellipse(0, 16, 16, 6, 0, 0, Math.PI * 2);
+      wctx.fill();
+
+      // Lead Monstra Following Companion
+      if (STATE.party.length > 0) {
+        const lead = STATE.party[0];
+        const cachedImg = PIXEL_IMAGE_CACHE[`${lead.stageId}_0_${PIXEL_GRID_RES}`];
+        if (cachedImg && cachedImg.complete) {
+          wctx.drawImage(cachedImg, -46, -10, 34, 34);
+        }
+      }
+
+      // Player Avatar Sprite (Pixel Trainer)
+      wctx.fillStyle = '#dc2626';
+      wctx.fillRect(-10, -18, 20, 24); // Red jacket
+      wctx.fillStyle = '#fde047';
+      wctx.fillRect(-8, -28, 16, 12);  // Face / Cap
+      wctx.fillStyle = '#0f172a';
+      wctx.fillRect(-8, 6, 6, 12);     // Left leg
+      wctx.fillRect(2, 6, 6, 12);      // Right leg
+      wctx.restore();
+
+      // Lighting Overlay (Day / Dusk / Night)
+      wctx.restore();
+      if (STATE.timeOfDay === 1) { // Dusk
+        wctx.fillStyle = 'rgba(234, 88, 12, 0.22)';
+        wctx.fillRect(0, 0, worldCanvas.width, worldCanvas.height);
+      } else if (STATE.timeOfDay === 2) { // Night
+        wctx.fillStyle = 'rgba(2, 6, 23, 0.62)';
+        wctx.fillRect(0, 0, worldCanvas.width, worldCanvas.height);
+      }
+
+      renderMinimap();
+    }
+
+    function renderMinimap() {
+      mctx.clearRect(0, 0, 144, 144);
+      mctx.fillStyle = '#064e3b';
+      mctx.fillRect(0, 0, 144, 144);
+
+      // Roads
+      const sx = 144 / WORLD_WIDTH;
+      const sy = 144 / WORLD_HEIGHT;
+      mctx.fillStyle = '#78716c';
+      mctx.fillRect(940 * sx, 0, 80 * sx, 144);
+      mctx.fillRect(0, 650 * sy, 144, 70 * sy);
+
+      // Landmarks dots
+      LANDMARKS.forEach(l => {
+        mctx.fillStyle = '#facc15';
+        mctx.fillRect(l.x * sx, l.y * sy, 6, 6);
+      });
+
+      // Player blip
+      mctx.fillStyle = '#38bdf8';
+      mctx.beginPath();
+      mctx.arc(STATE.player.x * sx, STATE.player.y * sy, 4, 0, Math.PI * 2);
+      mctx.fill();
+    }
+
+    function updateOverworldHud() {
+      if (STATE.party.length === 0) return;
+      const lead = STATE.party[0];
+      document.getElementById('hudLeadName').textContent = lead.name;
+      document.getElementById('hudLeadLv').textContent = `Lv.${lead.level}`;
+      const hpPct = Math.max(0, Math.min(100, (lead.hp / lead.maxHp) * 100));
+      document.getElementById('hudLeadHpBar').style.width = `${hpPct}%`;
+
+      document.getElementById('hudLeadIcon').innerHTML = getSpriteImgElement(lead.stageId, false, 'w-8 h-8');
+      document.getElementById('partyCountBadge').textContent = STATE.party.length;
+
+      let totalBagItems = 0;
+      for (const k in STATE.bag) totalBagItems += STATE.bag[k];
+      document.getElementById('bagBadgeCount').textContent = totalBagItems;
+    }
+
+    /***************************************************************************
+     * 7. TURN-BASED BATTLE SYSTEM
+     ***************************************************************************/
+    function triggerWildBattle() {
+      playSfx('encounter');
+      STATE.mode = 'battle';
+
+      const wildList = ['sikaru', 'aquafly', 'rimbafox', 'getahug'];
+      const chosenId = wildList[Math.floor(Math.random() * wildList.length)];
+      const wildLv = Math.max(2, STATE.party[0].level - Math.floor(Math.random() * 3));
+
+      STATE.battle.enemyMon = createMonstraInstance(chosenId, wildLv);
+      STATE.battle.playerMon = STATE.party[0];
+      STATE.battle.isPlayerTurn = true;
+      STATE.battle.isProcessing = false;
+      STATE.battle.escapesTried = 0;
+
+      document.getElementById('battleScreen').classList.remove('hidden');
+      refreshBattleSprites();
+      updateBattleHud();
+      closeBattleSubMenus();
+
+      setBattleLog(`Seekor ${STATE.battle.enemyMon.name} liar muncul!`, `Apa yang akan dilakukan oleh ${STATE.battle.playerMon.name}?`);
+    }
+
+    function refreshBattleSprites() {
+      const pWrap = document.getElementById('battlePlayerSpriteWrap');
+      const eWrap = document.getElementById('battleEnemySpriteWrap');
+      if (!STATE.battle.playerMon || !STATE.battle.enemyMon) return;
+
+      pWrap.innerHTML = getSpriteImgElement(STATE.battle.playerMon.stageId, true);
+      eWrap.innerHTML = getSpriteImgElement(STATE.battle.enemyMon.stageId, false);
+    }
+
+    function updateBattleHud() {
+      const p = STATE.battle.playerMon;
+      const e = STATE.battle.enemyMon;
+      if (!p || !e) return;
+
+      // Enemy Status
+      document.getElementById('battleEnemyName').textContent = e.name;
+      document.getElementById('battleEnemyLv').textContent = `Lv.${e.level}`;
+      document.getElementById('battleEnemyHpText').textContent = `${e.hp} / ${e.maxHp}`;
+      const eHpPct = Math.max(0, (e.hp / e.maxHp) * 100);
+      document.getElementById('battleEnemyHpBar').style.width = `${eHpPct}%`;
+      document.getElementById('battleEnemyTypes').innerHTML = e.types.map(t => getTypeBadgeHTML(t)).join('');
+
+      // Player Status
+      document.getElementById('battlePlayerName').textContent = p.name;
+      document.getElementById('battlePlayerLv').textContent = `Lv.${p.level}`;
+      document.getElementById('battlePlayerHpText').textContent = `${p.hp} / ${p.maxHp}`;
+      const pHpPct = Math.max(0, (p.hp / p.maxHp) * 100);
+      document.getElementById('battlePlayerHpBar').style.width = `${pHpPct}%`;
+      document.getElementById('battlePlayerTypes').innerHTML = p.types.map(t => getTypeBadgeHTML(t)).join('');
+
+      const expPct = Math.min(100, (p.exp / p.expNext) * 100);
+      document.getElementById('battlePlayerExpBar').style.width = `${expPct}%`;
+
+      document.getElementById('battleOrbCount').textContent = `x${STATE.bag.orb || 0}`;
+      document.getElementById('battlePotionCount').textContent = `x${STATE.bag.potion || 0}`;
+    }
+
+    function setBattleLog(mainMsg, subMsg = '') {
+      document.getElementById('battleLogText').textContent = mainMsg;
+      document.getElementById('battleSubLogText').textContent = subMsg;
+    }
+
+    function showBattleSkillMenu() {
+      playSfx('click');
+      const p = STATE.battle.playerMon;
+      const menu = document.getElementById('battleSkillMenu');
+      document.getElementById('battleMainButtons').classList.add('hidden');
+      menu.classList.remove('hidden');
+
+      menu.innerHTML = p.skills.map((sk, idx) => `
+        <button onclick="executePlayerSkill(${idx})" class="battle-cmd-btn rounded-xl p-2.5 bg-gradient-to-r from-sky-600 to-indigo-700 text-left text-white flex flex-col justify-between">
+          <div class="flex items-center justify-between">
+            <span class="font-extrabold text-xs sm:text-sm">${sk.name}</span>
+            <span class="text-[10px] px-1.5 py-0.2 rounded bg-black/40">${sk.type}</span>
+          </div>
+          <div class="text-[10px] text-sky-100 truncate mt-0.5">${sk.desc}</div>
+        </button>
+      `).join('') + `
+        <button onclick="closeBattleSubMenus()" class="battle-cmd-btn col-span-2 rounded-xl p-2 bg-slate-700 hover:bg-slate-600 text-white font-bold text-xs">
+          ↩ Kembali
+        </button>
+      `;
+    }
+
+    function showBattleBagMenu() {
+      playSfx('click');
+      document.getElementById('battleMainButtons').classList.add('hidden');
+      document.getElementById('battleBagMenu').classList.remove('hidden');
+    }
+
+    function closeBattleSubMenus() {
+      document.getElementById('battleMainButtons').classList.remove('hidden');
+      document.getElementById('battleSkillMenu').classList.add('hidden');
+      document.getElementById('battleBagMenu').classList.add('hidden');
+    }
+
+    function executePlayerSkill(skillIndex) {
+      if (STATE.battle.isProcessing || !STATE.battle.isPlayerTurn) return;
+      STATE.battle.isProcessing = true;
+      closeBattleSubMenus();
+
+      const p = STATE.battle.playerMon;
+      const e = STATE.battle.enemyMon;
+      const skill = p.skills[skillIndex];
+
+      playSfx('attack');
+      const pSprite = document.getElementById('battlePlayerSpriteWrap');
+      const eSprite = document.getElementById('battleEnemySpriteWrap');
+
+      pSprite.classList.add('lunge-player');
+      setTimeout(() => pSprite.classList.remove('lunge-player'), 450);
+
+      let dmg = 0;
+      if (skill.power > 0) {
+        const raw = (p.atk / Math.max(1, e.def)) * skill.power * 0.42;
+        dmg = Math.max(5, Math.floor(raw + (Math.random() * 6 - 3)));
+        e.hp = Math.max(0, e.hp - dmg);
+        setTimeout(() => {
+          eSprite.classList.add('hit-damage');
+          setTimeout(() => eSprite.classList.remove('hit-damage'), 450);
+        }, 200);
+      }
+
+      if (skill.drain && dmg > 0) {
+        const heal = Math.floor(dmg * skill.drain);
+        p.hp = Math.min(p.maxHp, p.hp + heal);
+      }
+
+      updateBattleHud();
+      setBattleLog(`${p.name} melancarkan ${skill.name}!`, dmg > 0 ? `Memberikan ${dmg} damage ke ${e.name}!` : skill.desc);
+
+      setTimeout(() => {
+        if (e.hp <= 0) {
+          handleBattleVictory();
+        } else {
+          STATE.battle.isPlayerTurn = false;
+          setTimeout(executeEnemyTurn, 1000);
+        }
+      }, 1200);
+    }
+
+    function executeEnemyTurn() {
+      const p = STATE.battle.playerMon;
+      const e = STATE.battle.enemyMon;
+
+      const skill = e.skills[Math.floor(Math.random() * e.skills.length)] || {
+        name: 'Serangan Liar', power: 45
+      };
+
+      playSfx('attack');
+      const eSprite = document.getElementById('battleEnemySpriteWrap');
+      const pSprite = document.getElementById('battlePlayerSpriteWrap');
+
+      eSprite.classList.add('lunge-enemy');
+      setTimeout(() => eSprite.classList.remove('lunge-enemy'), 450);
+
+      const raw = (e.atk / Math.max(1, p.def)) * (skill.power || 40) * 0.42;
+      const dmg = Math.max(4, Math.floor(raw + (Math.random() * 5 - 2)));
+      p.hp = Math.max(0, p.hp - dmg);
+
+      setTimeout(() => {
+        pSprite.classList.add('hit-damage');
+        setTimeout(() => pSprite.classList.remove('hit-damage'), 450);
+      }, 200);
+
+      updateBattleHud();
+      setBattleLog(`${e.name} membalas dengan ${skill.name}!`, `${p.name} menerima ${dmg} damage!`);
+
+      setTimeout(() => {
+        if (p.hp <= 0) {
+          handleBattleDefeat();
+        } else {
+          STATE.battle.isPlayerTurn = true;
+          STATE.battle.isProcessing = false;
+          setBattleLog(`Giliran ${p.name}!`, 'Pilih aksi Anda.');
+        }
+      }, 1200);
+    }
+
+    function handleBattleVictory() {
+      playSfx('evolve');
+      const p = STATE.battle.playerMon;
+      const e = STATE.battle.enemyMon;
+      const expGain = e.level * 18;
+      p.exp += expGain;
+
+      setBattleLog(`${e.name} tumbang!`, `${p.name} meraih ${expGain} EXP.`);
+
+      setTimeout(() => {
+        if (p.exp >= p.expNext) {
+          p.level++;
+          p.exp -= p.expNext;
+          p.expNext = p.level * 25;
+          p.maxHp += 5;
+          p.hp = p.maxHp;
+          p.atk += 3;
+          p.def += 2;
+          p.spd += 2;
+          playSfx('heal');
+          showToast(`${p.name} naik ke Level ${p.level}!`);
+          checkMonstraEvolution(p);
+        }
+        endBattle();
+      }, 1600);
+    }
+
+    function handleBattleDefeat() {
+      setBattleLog(`${STATE.battle.playerMon.name} kehabisan tenaga!`, 'Kamu mundur ke tempat yang aman...');
+      setTimeout(() => {
+        STATE.player.x = 980;
+        STATE.player.y = 680;
+        STATE.party[0].hp = Math.floor(STATE.party[0].maxHp * 0.5);
+        endBattle();
+      }, 1800);
+    }
+
+    function endBattle() {
+      document.getElementById('battleScreen').classList.add('hidden');
+      STATE.mode = 'overworld';
+      STATE.battle.isProcessing = false;
+      updateOverworldHud();
+    }
+
+    function attemptRunFromBattle() {
+      if (STATE.battle.isProcessing) return;
+      playSfx('click');
+      if (Math.random() < 0.8) {
+        setBattleLog('Berhasil melarikan diri!');
+        setTimeout(endBattle, 800);
+      } else {
+        setBattleLog('Gagal melarikan diri!');
+        STATE.battle.isPlayerTurn = false;
+        setTimeout(executeEnemyTurn, 1000);
+      }
+    }
+
+    function useBattleItem(itemType) {
+      if (STATE.battle.isProcessing || !STATE.battle.isPlayerTurn) return;
+      const p = STATE.battle.playerMon;
+      const e = STATE.battle.enemyMon;
+
+      if (itemType === 'orb') {
+        if ((STATE.bag.orb || 0) <= 0) {
+          showToast('Monstra Orb habis!');
+          return;
+        }
+        STATE.bag.orb--;
+        STATE.battle.isProcessing = true;
+        closeBattleSubMenus();
+
+        const orbAnim = document.getElementById('captureOrbAnim');
+        orbAnim.classList.remove('hidden');
+        setBattleLog('Melempar Monstra Orb!');
+
+        setTimeout(() => {
+          orbAnim.classList.add('hidden');
+          const catchRate = ((e.maxHp - e.hp) / e.maxHp) * 0.75 + 0.25;
+          if (Math.random() < catchRate) {
+            playSfx('catch');
+            setBattleLog(`Berhasil! ${e.name} berhasil ditangkap!`);
+            STATE.party.push(e);
+            setTimeout(endBattle, 1500);
+          } else {
+            setBattleLog(`${e.name} melepaskan diri dari Orb!`);
+            setTimeout(() => {
+              STATE.battle.isPlayerTurn = false;
+              executeEnemyTurn();
+            }, 1000);
+          }
+        }, 1200);
+
+      } else if (itemType === 'potion') {
+        if ((STATE.bag.potion || 0) <= 0) {
+          showToast('Jamu Segar habis!');
+          return;
+        }
+        STATE.bag.potion--;
+        p.hp = Math.min(p.maxHp, p.hp + 60);
+        playSfx('heal');
+        updateBattleHud();
+        closeBattleSubMenus();
+        setBattleLog(`${p.name} meminum Jamu Segar!`, 'HP pulih sebesar 60 poin.');
+        setTimeout(() => {
+          STATE.battle.isPlayerTurn = false;
+          executeEnemyTurn();
+        }, 1000);
+
+      } else if (itemType === 'rarecandy') {
+        p.level += 10;
+        p.maxHp += 25;
+        p.hp = p.maxHp;
+        p.atk += 15;
+        p.def += 12;
+        playSfx('evolve');
+        updateBattleHud();
+        closeBattleSubMenus();
+        showToast(`${p.name} melesat naik 10 Level!`);
+        checkMonstraEvolution(p);
+      }
+    }
+
+    /***************************************************************************
+     * 8. EVOLUTION PIPELINE
+     ***************************************************************************/
+    function checkMonstraEvolution(mon) {
+      const info = getStageData(mon.stageId);
+      if (!info) return;
+
+      const currentStage = info.stage;
+      if (!currentStage.evolveLevel || mon.level < currentStage.evolveLevel) return;
+
+      const familyStages = info.family.stages;
+      const nextStage = familyStages.find(st => st.stageNum === currentStage.stageNum + 1);
+      if (!nextStage) return;
+
+      openEvolutionModal(mon, nextStage);
+    }
+
+    function openEvolutionModal(mon, nextStage) {
+      playSfx('evolve');
+      const modal = document.getElementById('evolutionModal');
+      document.getElementById('evoTitleText').textContent = `Apa?! ${mon.name} sedang berevolusi!`;
+      document.getElementById('evoSubText').textContent = `${mon.name} berubah wujud menjadi ${nextStage.name}! Kekuatan elemen Nusantara kini menyatu dalam dirinya.`;
+
+      const box = document.getElementById('evoSpriteContainer');
+      box.innerHTML = getSpriteImgElement(nextStage.id, false, 'scale-125 animate-float');
+
+      mon.stageId = nextStage.id;
+      mon.name = nextStage.name;
+      mon.types = [...nextStage.types];
+      if (nextStage.skills) mon.skills = JSON.parse(JSON.stringify(nextStage.skills));
+
+      modal.classList.remove('hidden');
+    }
+
+    function closeEvolutionModal() {
+      document.getElementById('evolutionModal').classList.add('hidden');
+      updateOverworldHud();
+      if (STATE.mode === 'battle') {
+        refreshBattleSprites();
+        updateBattleHud();
+      }
+    }
+
+    /***************************************************************************
+     * 9. CONCEPT SHEET CODEX & MODAL MENUS
+     ***************************************************************************/
+    function openMonstraMenu(isBattleMode = false) {
+      playSfx('click');
+      document.getElementById('monstraModal').classList.remove('hidden');
+      renderCodexModal();
+    }
+
+    function closeMonstraMenu() {
+      document.getElementById('monstraModal').classList.add('hidden');
+    }
+
+    function openCodexFromBattle() {
+      openMonstraMenu(true);
+    }
+
+    function selectCodexFamily(famId) {
+      playSfx('click');
+      STATE.activeCodexFamily = famId;
+      renderCodexModal();
+    }
+
+    function renderCodexModal() {
+      const fam = MONSTRA_FAMILIES[STATE.activeCodexFamily];
+      const tabs = document.getElementById('partyMemberTabs');
+      tabs.innerHTML = STATE.party.map((m, idx) => `
+        <button onclick="setLeadPartyMember(${idx})" class="px-3 py-1 rounded-lg text-xs font-bold border transition ${
+          idx === 0 
+            ? 'bg-amber-500 text-slate-950 border-amber-300' 
+            : 'bg-slate-700 text-white border-slate-600 hover:bg-slate-600'
+        }">
+          ${idx === 0 ? '👑 ' : ''}${m.name} (Lv.${m.level})
+        </button>
+      `).join('');
+
+      const body = document.getElementById('codexSheetBody');
+      body.innerHTML = `
+        <div class="border-2 border-amber-500/70 rounded-2xl p-4 bg-white/60 shadow">
+          <div class="flex flex-col md:flex-row md:items-center justify-between border-b pb-3 gap-2">
+            <div>
+              <div class="text-[11px] font-black uppercase tracking-wider text-amber-700">${fam.subtitle}</div>
+              <h2 class="font-serif-title text-2xl font-black text-slate-900">${fam.familyTitle}</h2>
+            </div>
+            <div class="italic text-xs text-stone-600 max-w-md">${fam.quoteLeft}</div>
+          </div>
+
+          <p class="text-xs text-slate-700 mt-3 leading-relaxed">${fam.summaryDesc}</p>
+
+          <!-- 3 Evolutionary Stages Grid -->
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+            ${fam.stages.map(st => `
+              <div class="rounded-xl border border-stone-300 bg-stone-50 p-3 flex flex-col items-center shadow-sm">
+                <span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-800 text-amber-300 mb-1">
+                  Tahap ${st.stageNum} • ${st.levelRange}
+                </span>
+                <h4 class="font-bold text-base text-slate-900">${st.name}</h4>
+                
+                <div class="w-32 h-32 my-2 flex items-center justify-center">
+                  ${getSpriteImgElement(st.id, false, 'animate-battle-idle')}
+                </div>
+
+                <div class="flex gap-1 mb-2">
+                  ${st.types.map(t => getTypeBadgeHTML(t)).join('')}
+                </div>
+
+                <p class="text-[11px] text-stone-600 text-center leading-snug">${st.lore}</p>
+                
+                <div class="w-full mt-3 pt-2 border-t border-stone-200 grid grid-cols-3 gap-1 text-center text-[10px]">
+                  <div class="bg-stone-200 rounded p-1">HP: <b>${st.stats.hp}</b></div>
+                  <div class="bg-stone-200 rounded p-1">ATK: <b>${st.stats.atk}</b></div>
+                  <div class="bg-stone-200 rounded p-1">SPD: <b>${st.stats.spd}</b></div>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+
+          <!-- Evolutionary Materials & Fun Facts -->
+          <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+            <div class="bg-amber-100/70 border border-amber-300 rounded-xl p-3">
+              <h5 class="font-bold text-amber-900 mb-1">Material Evolusi:</h5>
+              <div class="flex flex-wrap gap-2">
+                ${fam.evoMaterials.map(mat => `
+                  <span class="px-2.5 py-1 rounded-lg bg-white border border-amber-300 text-stone-800 font-semibold shadow-xs">
+                    ${mat.icon} ${mat.name} (${mat.req}x)
+                  </span>
+                `).join('')}
+              </div>
+            </div>
+
+            <div class="bg-stone-100 border border-stone-300 rounded-xl p-3">
+              <h5 class="font-bold text-stone-800 mb-1">Fakta Nusantara:</h5>
+              <ul class="list-disc pl-4 space-y-1 text-stone-600 text-[11px]">
+                ${fam.funFacts.map(fact => `<li>${fact}</li>`).join('')}
+              </ul>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function setLeadPartyMember(index) {
+      if (index === 0) return;
+      playSfx('click');
+      const chosen = STATE.party.splice(index, 1)[0];
+      STATE.party.unshift(chosen);
+      renderCodexModal();
+      updateOverworldHud();
+      showToast(`${chosen.name} kini memimpin party!`);
+    }
+
+    function openBagModal() {
+      playSfx('click');
+      document.getElementById('bagModal').classList.remove('hidden');
+      const grid = document.getElementById('bagItemsGrid');
+
+      const itemDefs = {
+        orb: { name: 'Monstra Orb', icon: '🔴', desc: 'Bola penjinak untuk menangkap Monstra liar.' },
+        potion: { name: 'Jamu Segar', icon: '🧪', desc: 'Ramuan tradisional memulihkan 60 HP.' },
+        rarecandy: { name: 'Kristal Latih', icon: '✨', desc: 'Meningkatkan 10 level secara instan.' },
+        bulu_angin: { name: 'Bulu Angin', icon: '🪶', desc: 'Bahan evolusi keluarga Garudaya.' },
+        kepingan_batik: { name: 'Kepingan Batik', icon: '🧣', desc: 'Ornamen antik Nusantara.' },
+        sisik_samudra: { name: 'Sisik Samudra', icon: '🐚', desc: 'Bahan evolusi keluarga Aquarion.' },
+        cozy_fur: { name: 'Cozy Fur', icon: '🧶', desc: 'Bulu lembut bahan evolusi Getahug.' }
+      };
+
+      grid.innerHTML = Object.entries(STATE.bag).map(([key, count]) => {
+        const item = itemDefs[key] || { name: key, icon: '📦', desc: 'Material petualangan.' };
+        return `
+          <div class="bg-slate-900/90 border border-slate-700 rounded-xl p-3 flex items-center justify-between">
+            <div class="flex items-center gap-2.5">
+              <span class="text-2xl">${item.icon}</span>
+              <div>
+                <div class="font-bold text-sm text-white">${item.name}</div>
+                <div class="text-[11px] text-slate-400">${item.desc}</div>
+              </div>
+            </div>
+            <span class="font-extrabold text-sm text-amber-300 px-2 py-1 rounded bg-black/40">x${count}</span>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function closeBagModal() {
+      document.getElementById('bagModal').classList.add('hidden');
+    }
+
+    function openMapModal() {
+      playSfx('click');
+      document.getElementById('mapModal').classList.remove('hidden');
+    }
+
+    function closeMapModal() {
+      document.getElementById('mapModal').classList.add('hidden');
+    }
+
+    function fastTravelTo(x, y, locName) {
+      playSfx('pickup');
+      STATE.player.x = x;
+      STATE.player.y = y;
+      closeMapModal();
+      showToast(`Tiba di: ${locName}`);
+    }
+
+    function openQuestModal() {
+      playSfx('click');
+      openDialogue('📜', 'Quest Utama: ' + STATE.quest.title, STATE.quest.desc);
+    }
+
+    function openSystemMenu() {
+      openMonstraMenu();
+    }
+
+    function openDialogue(avatar, name, text) {
+      playSfx('click');
+      document.getElementById('dialogueSpeakerAvatar').textContent = avatar;
+      document.getElementById('dialogueSpeakerName').textContent = name;
+      document.getElementById('dialogueText').textContent = text;
+      document.getElementById('dialogueModal').classList.remove('hidden');
+    }
+
+    function closeDialogueModal() {
+      document.getElementById('dialogueModal').classList.add('hidden');
+    }
+
+    function showToast(msg) {
+      const toast = document.getElementById('toastBanner');
+      const toastText = document.getElementById('toastText');
+      toastText.textContent = msg;
+      toast.classList.remove('opacity-0');
+      toast.classList.add('opacity-100');
+      setTimeout(() => {
+        toast.classList.remove('opacity-100');
+        toast.classList.add('opacity-0');
+      }, 2200);
+    }
+
+    /***************************************************************************
+     * 10. MAIN ENGINE GAME LOOP
+     ***************************************************************************/
+    function mainGameLoop() {
+      if (STATE.mode === 'overworld') {
+        updatePlayerMovement();
+        renderWorld();
+      }
+      requestAnimationFrame(mainGameLoop);
+    }
+
+    // Initialize application on load
+    window.addEventListener('DOMContentLoaded', () => {
+      initStarterScreen();
+      requestAnimationFrame(mainGameLoop);
+    });
+  </script>
+</body>
+</html>
